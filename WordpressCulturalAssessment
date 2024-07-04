@@ -1,0 +1,344 @@
+
+```php
+<?php
+/**
+ * Plugin Name: Cultural Assessment Tool
+ * Description: A psychometric cultural assessment with automated reporting
+ * Version: 1.0
+ * Author: Your Name
+ */
+
+// Prevent direct access to the plugin file
+defined('ABSPATH') or die('No script kiddies please!');
+
+// Include necessary files
+require_once plugin_dir_path(__FILE__) . 'includes/post-types.php';
+require_once plugin_dir_path(__FILE__) . 'includes/meta-boxes.php';
+require_once plugin_dir_path(__FILE__) . 'includes/form-handler.php';
+require_once plugin_dir_path(__FILE__) . 'includes/report-generator.php';
+
+// Activation hook
+register_activation_hook(__FILE__, 'cat_activate_plugin');
+
+function cat_activate_plugin() {
+    // Create necessary database tables, if any
+    // Set up initial options
+}
+
+// Enqueue scripts and styles
+add_action('wp_enqueue_scripts', 'cat_enqueue_scripts');
+
+function cat_enqueue_scripts() {
+    wp_enqueue_style('cat-styles', plugin_dir_url(__FILE__) . 'assets/css/styles.css');
+    wp_enqueue_script('cat-scripts', plugin_dir_url(__FILE__) . 'assets/js/scripts.js', array('jquery'), '1.0', true);
+}
+
+// Add menu item
+add_action('admin_menu', 'cat_add_admin_menu');
+
+function cat_add_admin_menu() {
+    add_menu_page('Cultural Assessment', 'Cultural Assessment', 'manage_options', 'cultural-assessment', 'cat_admin_page', 'dashicons-chart-bar', 30);
+}
+
+function cat_admin_page() {
+    // Admin page content
+}
+
+```
+
+This is the main plugin file. Now, let's create the necessary include files:
+
+1. post-types.php:
+
+
+
+```php
+<?php
+// Register custom post types
+add_action('init', 'cat_register_post_types');
+
+function cat_register_post_types() {
+    // Register Questions post type
+    register_post_type('cat_question',
+        array(
+            'labels' => array(
+                'name' => 'Questions',
+                'singular_name' => 'Question',
+            ),
+            'public' => true,
+            'has_archive' => false,
+            'supports' => array('title', 'editor'),
+        )
+    );
+
+    // Register Responses post type
+    register_post_type('cat_response',
+        array(
+            'labels' => array(
+                'name' => 'Responses',
+                'singular_name' => 'Response',
+            ),
+            'public' => false,
+            'has_archive' => false,
+        )
+    );
+}
+
+```
+
+2. meta-boxes.php:
+
+
+
+```php
+<?php
+// Add meta boxes to the Questions post type
+add_action('add_meta_boxes', 'cat_add_meta_boxes');
+
+function cat_add_meta_boxes() {
+    add_meta_box('cat_question_details', 'Question Details', 'cat_question_details_callback', 'cat_question', 'normal', 'high');
+}
+
+function cat_question_details_callback($post) {
+    wp_nonce_field(basename(__FILE__), 'cat_question_nonce');
+    $scale = get_post_meta($post->ID, '_cat_question_scale', true);
+    ?>
+    <p>
+        <label for="cat_question_scale">Scale:</label>
+        <select name="cat_question_scale" id="cat_question_scale">
+            <option value="5" <?php selected($scale, '5'); ?>>1-5</option>
+            <option value="7" <?php selected($scale, '7'); ?>>1-7</option>
+        </select>
+    </p>
+    <?php
+}
+
+// Save meta box data
+add_action('save_post', 'cat_save_question_meta');
+
+function cat_save_question_meta($post_id) {
+    if (!isset($_POST['cat_question_nonce']) || !wp_verify_nonce($_POST['cat_question_nonce'], basename(__FILE__))) {
+        return $post_id;
+    }
+
+    if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+        return $post_id;
+    }
+
+    if ('cat_question' == $_POST['post_type']) {
+        if (!current_user_can('edit_post', $post_id)) {
+            return $post_id;
+        }
+    }
+
+    $scale = isset($_POST['cat_question_scale']) ? sanitize_text_field($_POST['cat_question_scale']) : '';
+    update_post_meta($post_id, '_cat_question_scale', $scale);
+}
+
+```
+3. form-handler.php:
+
+
+
+```php
+<?php
+// Handle form submission
+add_action('wp_ajax_submit_cultural_assessment', 'cat_handle_form_submission');
+add_action('wp_ajax_nopriv_submit_cultural_assessment', 'cat_handle_form_submission');
+
+function cat_handle_form_submission() {
+    if (!isset($_POST['cat_nonce']) || !wp_verify_nonce($_POST['cat_nonce'], 'cultural_assessment_nonce')) {
+        wp_send_json_error('Invalid nonce');
+    }
+
+    $responses = isset($_POST['responses']) ? $_POST['responses'] : array();
+    
+    if (empty($responses)) {
+        wp_send_json_error('No responses received');
+    }
+
+    $response_id = wp_insert_post(array(
+        'post_type' => 'cat_response',
+        'post_status' => 'publish',
+    ));
+
+    if (is_wp_error($response_id)) {
+        wp_send_json_error('Failed to save response');
+    }
+
+    foreach ($responses as $question_id => $answer) {
+        add_post_meta($response_id, 'q_' . $question_id, intval($answer));
+    }
+
+    $report_url = add_query_arg('response_id', $response_id, home_url('/assessment-report/'));
+    wp_send_json_success(array('report_url' => $report_url));
+}
+
+// Shortcode to display the assessment form
+add_shortcode('cultural_assessment_form', 'cat_assessment_form_shortcode');
+
+function cat_assessment_form_shortcode() {
+    ob_start();
+    ?>
+    <form id="cultural-assessment-form">
+        <?php
+        $questions = new WP_Query(array(
+            'post_type' => 'cat_question',
+            'posts_per_page' => -1,
+            'orderby' => 'menu_order',
+            'order' => 'ASC',
+        ));
+
+        while ($questions->have_posts()) : $questions->the_post();
+            $scale = get_post_meta(get_the_ID(), '_cat_question_scale', true);
+            ?>
+            <div class="question">
+                <h4><?php the_title(); ?></h4>
+                <div class="scale">
+                    <?php for ($i = 1; $i <= $scale; $i++) : ?>
+                        <label>
+                            <input type="radio" name="q_<?php echo get_the_ID(); ?>" value="<?php echo $i; ?>" required>
+                            <?php echo $i; ?>
+                        </label>
+                    <?php endfor; ?>
+                </div>
+            </div>
+        <?php
+        endwhile;
+        wp_reset_postdata();
+        ?>
+        <input type="hidden" name="action" value="submit_cultural_assessment">
+        <?php wp_nonce_field('cultural_assessment_nonce', 'cat_nonce'); ?>
+        <button type="submit">Submit Assessment</button>
+    </form>
+    <div id="assessment-result"></div>
+    <script>
+    jQuery(document).ready(function($) {
+        $('#cultural-assessment-form').on('submit', function(e) {
+            e.preventDefault();
+            var formData = $(this).serialize();
+            $.ajax({
+                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                type: 'POST',
+                data: formData,
+                success: function(response) {
+                    if (response.success) {
+                        window.location.href = response.data.report_url;
+                    } else {
+                        $('#assessment-result').html('Error: ' + response.data);
+                    }
+                }
+            });
+        });
+    });
+    </script>
+    <?php
+    return ob_get_clean();
+}
+
+```
+
+4. report-generator.php:
+
+
+
+```php
+<?php
+// Generate report
+function cat_generate_report($response_id) {
+    $questions = new WP_Query(array(
+        'post_type' => 'cat_question',
+        'posts_per_page' => -1,
+        'orderby' => 'menu_order',
+        'order' => 'ASC',
+    ));
+
+    $report = '';
+    $total_score = 0;
+    $question_count = 0;
+
+    while ($questions->have_posts()) : $questions->the_post();
+        $question_id = get_the_ID();
+        $answer = get_post_meta($response_id, 'q_' . $question_id, true);
+        $scale = get_post_meta($question_id, '_cat_question_scale', true);
+        
+        if ($answer) {
+            $total_score += $answer;
+            $question_count++;
+            
+            $report .= '<h4>' . get_the_title() . '</h4>';
+            $report .= '<p>Your answer: ' . $answer . ' out of ' . $scale . '</p>';
+            
+            // Compare to benchmark (you'll need to implement this based on your data)
+            $benchmark = cat_get_benchmark($question_id);
+            $report .= '<p>Benchmark average: ' . number_format($benchmark, 1) . '</p>';
+            
+            // Determine if the score is low, medium, or high
+            $assessment = cat_assess_score($answer, $benchmark, $scale);
+            $report .= '<p>Assessment: ' . $assessment['label'] . '</p>';
+            $report .= '<p>Action items: ' . $assessment['action_items'] . '</p>';
+        }
+    endwhile;
+    wp_reset_postdata();
+
+    $average_score = $question_count > 0 ? $total_score / $question_count : 0;
+    $overall_benchmark = cat_get_overall_benchmark();
+    
+    $report = '<h2>Cultural Assessment Report</h2>' .
+              '<p>Your average score: ' . number_format($average_score, 1) . '</p>' .
+              '<p>Overall benchmark: ' . number_format($overall_benchmark, 1) . '</p>' .
+              '<h3>Detailed Results:</h3>' . $report;
+
+    return $report;
+}
+
+// Get benchmark for a specific question (you'll need to implement this)
+function cat_get_benchmark($question_id) {
+    // Placeholder: return a random value between 1 and 5
+    return rand(1, 5);
+}
+
+// Get overall benchmark (you'll need to implement this)
+function cat_get_overall_benchmark() {
+    // Placeholder: return a random value between 1 and 5
+    return rand(1, 5);
+}
+
+// Assess score and provide feedback
+function cat_assess_score($score, $benchmark, $scale) {
+    $diff = $score - $benchmark;
+    $max_diff = ($scale - 1) / 2;
+
+    if ($diff < -$max_diff / 2) {
+        return array(
+            'label' => 'Low',
+            'action_items' => 'Focus on improving this area. Consider seeking additional training or resources.'
+        );
+    } elseif ($diff > $max_diff / 2) {
+        return array(
+            'label' => 'High',
+            'action_items' => 'You're doing well in this area. Share your knowledge and experiences with others.'
+        );
+    } else {
+        return array(
+            'label' => 'Medium',
+            'action_items' => 'You're on par with the benchmark. Continue to develop and maintain your skills in this area.'
+        );
+    }
+}
+
+// Shortcode to display the assessment report
+add_shortcode('cultural_assessment_report', 'cat_assessment_report_shortcode');
+
+function cat_assessment_report_shortcode() {
+    if (!isset($_GET['response_id'])) {
+        return 'No assessment response found.';
+    }
+
+    $response_id = intval($_GET['response_id']);
+    $report = cat_generate_report($response_id);
+
+    return $report;
+}
+
+```
